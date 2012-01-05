@@ -27,12 +27,6 @@
         IRR equ 0x0010
         BTN equ 0x0008
 
-        FWKEY equ 0xA500
-        FN0 equ 0x0001
-        WRT equ 0x0040
-        FSSEL1 equ 0x0080
-        LOCK equ 0x0010
-
         MAX_INTERVAL equ 5000
 
         .org 0xF800
@@ -113,7 +107,7 @@ reset:
         mov.b &CALDCO_1MHZ,&DCOCTL
 
         bis.b #DIVS_0,&BCSCTL2  ; SMCLK = 1 MHz /1
-        mov.w #CCIE,&TACCTL0    ; Set timer interrupt
+        bis.w #CCIE,&TACCTL0    ; Set timer interrupt
         mov.w #MAX_INTERVAL,&TACCR0
 
         bis.b #0x58,SR          ; Enter LPM1 with GIE
@@ -135,31 +129,13 @@ p1_isr_irr:
         ;; ELSE ALIVE && NOT READING
         mov.w #fei_arr,R10      ; Reset fei_arr index
         bis.b #READING,R11      ; Enter READING state
-        mov.w #(TASSEL_2|MC_1|TACLR),&TACTL
+        bis.w #(TASSEL_2|MC_1|TACLR),&TACTL
         jmp p1_isr_ret
 p1_isr_store:
-        MOV   #FWKEY+FSSEL1+FN0,&FCTL2
-        MOV   #FWKEY,&FCTL3
-        MOV   #FWKEY+WRT,&FCTL1
+        mov.w &TAR,0(R10)
+        incd.w R10                ; Increment fei_arr index
 
-        mov.w &TAR,&fei_arr
-
-        MOV   #FWKEY,&FCTL1
-
-        clr.w R12
-        mov.b &TAR,R12
-        call #uart_tx
-
-        clr.w R12
-        mov.b &fei_arr,R12
-        call #uart_tx
-
-        clr.w R12
-        mov.b &(fei_arr+1),R12
-        call #uart_tx
-
-        incd R10                 ; Increment fei_arr index
-        mov.w #(TASSEL_2|MC_1|TACLR),&TACTL ; Clear and start timer in up mode
+        bis.w #(TASSEL_2|MC_1|TACLR),&TACTL ; Clear and start timer in up mode
         jmp p1_isr_ret
 p1_isr_btn:
         bic.b #BTN,&P1IFG
@@ -173,20 +149,30 @@ ta0_isr:
         ;; IFG cleared automatically
         mov.w #MC_0,&TACTL      ; Halt timer
 
-        ;; XXX TODO
-        ;; - write fei_arr to uart
+        mov.w #fei_arr,R6
+ta0_send_loop:
+        mov.b 0(R6),R12
+        call #uart_tx
+
+        mov.b 1(R6),R12
+        call #uart_tx
+
+        incd.w R6
+        cmp R6,R10
+        jnz ta0_send_loop
+
+        call #uart_tx
+        call #uart_tx
+
+        mov.w #fei_arr,R10      ; Reset fei_arr index
 
         bic.b #READING,R11
+        bic.b #ALIVE,R11
+        xor.b #(GLED|RLED),&P1OUT ; Toggle LEDs
         reti
 
 hang:
         jmp hang
-
-;;; Data must not overwrite interrupt vector table (IVT) at 0xFFE0.
-;;; Technically 0xFFDE to 0xFFC0 are also part of the IVT, but are not used
-;;; by G2x31 devices.
-
-fei_arr: dw 0xd03c        ; Base of falling-edge interval array
 
         .org 0xFFE0
 vectors:
@@ -207,3 +193,8 @@ vectors:
         dw hang                 ; 0xFFFA
         dw hang                 ; 0xFFFC NMIIFG, OFIFG, ACCVIFG
         dw reset                ; 0xFFFE PORIFG, RSTIFG, WDTIFG, KEYV
+
+        .org 0x0200
+fei_arr:
+        dw 0x1234      ; Base of falling-edge interval array
+
